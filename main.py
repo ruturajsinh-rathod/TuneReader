@@ -49,7 +49,7 @@ from pathlib import Path
 from music21 import converter, stream, tempo
 from natsort import natsorted
 from pdf2image import convert_from_path
-
+os.environ["TESSDATA_PREFIX"] = "/usr/share/tesseract-ocr/4.00/tessdata"
 # === USER CONFIGURATION ===
 
 # Path to the input file (can be a scanned sheet music PDF or an image like PNG/JPG)
@@ -154,27 +154,56 @@ def convert_to_images(input_path: Path, temp_dir: Path) -> list[Path]:
 # === Run Audiveris ===
 def run_audiveris(images: list[Path], out_dir: Path):
     """
-        Run Audiveris OMR on each image to extract MusicXML files.
+    Run Audiveris OMR in batch mode on a list of image files to extract MusicXML.
 
-        Parameters:
-            images (list[Path]): List of image paths to process.
-            out_dir (Path): Output directory where MusicXML will be stored.
+    Parameters:
+        images (list[Path]): List of image paths to process.
+        out_dir (Path): Output directory for MusicXML files.
 
-        Logs the output of Audiveris to a log file for each image.
-        """
+    This function logs output to a single batch log file. If Audiveris fails,
+    it logs a warning and returns without falling back automatically.
+    """
 
-    for img in images:
-        log.info(f"Running Audiveris on: {img.name}")
-        log_path = out_dir / f"{img.stem}_audiveris.log"
-        try:
-            with open(log_path, "w") as logfile:
-                subprocess.run([
-                    str(audiveris_bin), "-batch", "-export",
+    log_path = out_dir / "audiveris_batch.log"
+    log.info(f"Running Audiveris batch on {len(images)} image(s)...")
+
+    try:
+        with open(log_path, "w") as logfile:
+            subprocess.run(
+                [
+                    str(audiveris_bin),
+                    "-batch",
+                    "-export",
                     "-output", str(out_dir),
-                    str(img)
-                ], check=True, stdout=logfile, stderr=subprocess.STDOUT)
-        except subprocess.CalledProcessError:
-            log.warning(f"Audiveris failed for {img.name}")
+                    *map(str, images)  # Unpacks each image path
+                ],
+                check=True,
+                stdout=logfile,
+                stderr=subprocess.STDOUT
+            )
+    except subprocess.CalledProcessError:
+        log.warning("No MusicXML from batch — falling back to per-image Audiveris mode...")
+
+        # === Fallback: Per-image mode ===
+        for img in images:
+            log.info(f"Running Audiveris on: {img.name}")
+            per_image_log = out_dir / f"{img.stem}_audiveris.log"
+            try:
+                with open(per_image_log, "w") as logfile:
+                    subprocess.run(
+                        [
+                            str(audiveris_bin),
+                            "-batch",
+                            "-export",
+                            "-output", str(out_dir),
+                            str(img)
+                        ],
+                        check=True,
+                        stdout=logfile,
+                        stderr=subprocess.STDOUT
+                    )
+            except subprocess.CalledProcessError:
+                log.warning(f"Audiveris failed for {img.name}")
 
 # === MuseScore fallback ===
 def try_musescore_fallback(input_file: Path, out_dir: Path) -> list[Path]:
