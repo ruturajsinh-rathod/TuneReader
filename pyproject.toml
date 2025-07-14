@@ -1,0 +1,12 @@
+[tool.poetry]
+name = "test-audiveris"
+version = "0.1.0"
+description = ""
+authors = ["Ruturajsinh Rathod <vazarutaj@gmail.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+music21 = "^9.7.1"
+natsort = "^8.4.0"
+pdf2image = "^1.17.0"
+opencv-python = "^4.12.0.88"
