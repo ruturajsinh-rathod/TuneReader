@@ -40,20 +40,21 @@ Usage:
 
 """
 
+import json
 import os
 import subprocess
 import shutil
 import platform
 import logging
 from pathlib import Path
-from music21 import converter, stream, tempo
+from music21 import converter, stream, tempo, chord, note
 from natsort import natsorted
 from pdf2image import convert_from_path
 os.environ["TESSDATA_PREFIX"] = "/usr/share/tesseract-ocr/4.00/tessdata"
 # === USER CONFIGURATION ===
 
 # Path to the input file (can be a scanned sheet music PDF or an image like PNG/JPG)
-input_file = Path("pdf.pdf")  # PDF or image
+input_file = Path("Ed Sheeran-Shape of you.pdf")  # PDF or image
 
 # Directory where all intermediate and final outputs (images, MusicXML, MIDI, MP3) will be saved
 output_dir = Path("output")
@@ -67,6 +68,22 @@ soundfont_path = Path("/usr/share/sounds/sf2/FluidR3_GM.sf2")
 # === Logging setup ===
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger()
+
+"""
+Strategy	        Keeps
+top        -> Highest - pitched note
+bottom     -> Lowest - pitched note
+first      -> First pitch (as listed)
+last       -> Last pitch (as listed)
+"""
+strategy= None
+
+left_hand = False
+right_hand = False
+
+# Shift all notes by N semitones (positive = up, negative = down)
+transpose_interval = 0  # Example: +2 semitones up, or -1 for down
+
 
 # === Dependency check ===
 def check_dependencies():
@@ -92,6 +109,118 @@ def check_dependencies():
         if shutil.which(binary) is None:
             log.error(f"{binary} not found. Please install it.")
             exit(1)
+
+def make_score_monophonic(score: stream.Score, strategy: str) -> stream.Score:
+    """
+    Convert a polyphonic score to monophonic by keeping only one note per offset,
+    based on the specified harmony strategy.
+
+    strategy:
+        - 'top'    → keep highest pitch
+        - 'bottom' → keep lowest pitch
+        - 'first'  → keep first note in chord
+        - 'last'   → keep last note in chord
+    """
+
+    mono_score = stream.Score()
+    flat = score.flatten().notes.stream()
+    note_dict = {}
+
+    for n in flat:
+        offset = round(n.offset, 3)
+
+        # Convert chord to note using strategy
+        if isinstance(n, chord.Chord):
+            if strategy == "top":
+                selected = note.Note(max(n.pitches))
+            elif strategy == "bottom":
+                selected = note.Note(min(n.pitches))
+            elif strategy == "first":
+                selected = note.Note(n.pitches[0])
+            elif strategy == "last":
+                selected = note.Note(n.pitches[-1])
+            else:
+                raise ValueError(f"Unknown strategy: {strategy}")
+            selected.duration = n.duration
+            selected.offset = n.offset
+        else:
+            selected = n
+
+        # Replace if no note yet at this offset or selected one is "preferred"
+        if offset not in note_dict:
+            note_dict[offset] = selected
+        else:
+            # Optional: decide replacement logic
+            note_dict[offset] = selected  # overwrite with new strategy
+
+    mono_part = stream.Part()
+    for offset in sorted(note_dict):
+        mono_note = note_dict[offset]
+        mono_part.insert(mono_note.offset, mono_note)
+
+    mono_score.insert(0, mono_part)
+    return mono_score
+
+def filter_score_by_pitch(score: stream.Score, min_pitch: int = None, max_pitch: int = None) -> stream.Score:
+    """
+    Filter the score to only include notes within the given pitch range (inclusive).
+
+    Parameters:
+        min_pitch (int): Minimum MIDI pitch to keep (e.g., 0 = lowest possible note)
+        max_pitch (int): Maximum MIDI pitch to keep (e.g., 60 = middle C for left hand)
+
+    Returns:
+        stream.Score: A new score containing only the filtered notes.
+    """
+
+    filtered_score = stream.Score()
+    part = stream.Part()
+
+    for n in score.flatten().notes:
+        if n.isNote:
+            pitch_val = n.pitch.midi
+            if ((min_pitch is None or pitch_val >= min_pitch) and
+                    (max_pitch is None or pitch_val <= max_pitch)):
+                part.insert(n.offset, n)
+        elif n.isChord:
+            # Filter pitches in the chord
+            pitches = [p for p in n.pitches if
+                       (min_pitch is None or p.midi >= min_pitch) and
+                       (max_pitch is None or p.midi <= max_pitch)]
+            if pitches:
+                new_chord = chord.Chord(pitches)
+                new_chord.duration = n.duration
+                new_chord.offset = n.offset
+                part.insert(new_chord.offset, new_chord)
+
+    filtered_score.insert(0, part)
+    return filtered_score
+
+def extract_midi_note_sequence(midi_path: Path) -> list[dict]:
+    """
+    Extract note sequences from a MIDI file for comparison/debugging.
+
+    Returns a list of dicts with offset and pitch info.
+    """
+    midi_score = converter.parse(midi_path)
+    sequence = []
+    for n in midi_score.recurse().notes:
+        if n.isNote:
+            sequence.append({
+                "offset": round(n.offset, 2),
+                "pitch": n.nameWithOctave
+            })
+        elif n.isChord:
+            sequence.append({
+                "offset": round(n.offset, 2),
+                "pitch": n.pitches[0].nameWithOctave
+            })
+    return sequence
+
+
+def save_note_sequence_as_json(notes: list[dict], json_path: Path):
+    with open(json_path, "w") as f:
+        json.dump(notes, f, indent=2)
 
 # === Audio playback ===
 def play_audio(mp3_path: Path):
@@ -264,6 +393,10 @@ def convert_to_midi(mp3_base: str, mxl_files: list[Path], out_dir: Path) -> Path
                 part = converter.parse(f)
                 score.append(part)
 
+        if transpose_interval != 0:
+            log.info(f"Transposing all notes by {transpose_interval} semitone(s)...")
+            score = score.transpose(transpose_interval)
+
         # Remove broken repeat marks
         for el in score.recurse():
             if el.classes and ("Repeat" in el.classes or "RepeatBracket" in el.classes):
@@ -274,8 +407,29 @@ def convert_to_midi(mp3_base: str, mxl_files: list[Path], out_dir: Path) -> Path
             t.activeSite.remove(t)
         score.insert(0, tempo.MetronomeMark(number=160))
 
+        if left_hand and right_hand:
+            raise ValueError("Cannot enable both left_hand and right_hand simultaneously.")
+
+        # Filter by pitch (left or right hand) before making monophonic
+        if left_hand:
+            log.info("Filtering for left hand")
+            score = filter_score_by_pitch(score, max_pitch=60)
+
+        elif right_hand:
+            log.info("Filtering for right hand")
+            score = filter_score_by_pitch(score, min_pitch=61)
+
+        # Now apply monophonic strategy if given
+        if strategy is not None:
+            log.info(f"MIDI conversion for strategy: {strategy}")
+            score = make_score_monophonic(score, strategy=strategy)
+
         score.quantize(inPlace=True)
         score.write("midi", fp=str(midi_path))
+        note_data = extract_midi_note_sequence(midi_path)
+        json_path = midi_path.with_suffix(".json")
+        save_note_sequence_as_json(note_data, json_path)
+        log.info(f"Note sequence saved: {json_path}")
         log.info(f"MIDI saved: {midi_path}")
         return midi_path
     except Exception as e:
