@@ -110,6 +110,30 @@ def check_dependencies():
             log.error(f"{binary} not found. Please install it.")
             exit(1)
 
+def apply_alternating_tempos(score, bpm1: int = 90, bpm2: int =160, seconds_per_step=10):
+    """
+    Apply alternating tempos every `seconds_per_step` real seconds,
+    with precise real-time alignment.
+    """
+    current_offset = 0.0
+    total_quarters = score.highestTime
+    toggle = True
+    current_time = 0.0  # Real time elapsed in seconds
+
+    while current_offset < total_quarters:
+        bpm = bpm1 if toggle else bpm2
+        mm = tempo.MetronomeMark(number=bpm)
+        score.insert(current_offset, mm)
+
+        # Compute how many quarter notes are covered in this step
+        quarters_this_step = (bpm / 60.0) * seconds_per_step
+        current_offset += quarters_this_step
+        current_time += seconds_per_step
+        toggle = not toggle
+
+    return score
+
+
 def make_score_monophonic(score: stream.Score, strategy: str) -> stream.Score:
     """
     Convert a polyphonic score to monophonic by keeping only one note per offset,
@@ -423,6 +447,10 @@ def convert_to_midi(mp3_base: str, mxl_files: list[Path], out_dir: Path) -> Path
         if strategy is not None:
             log.info(f"MIDI conversion for strategy: {strategy}")
             score = make_score_monophonic(score, strategy=strategy)
+
+        # === Insert here: Apply alternating tempos ===
+        log.info("Applying alternating tempos: 90 ↔ 160 BPM every 10s")
+        score = apply_alternating_tempos(score, bpm1=90, bpm2=160, seconds_per_step=10)
 
         score.quantize(inPlace=True)
         score.write("midi", fp=str(midi_path))
