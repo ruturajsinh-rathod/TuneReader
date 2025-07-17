@@ -29,7 +29,7 @@ TuneReader uses Optical Music Recognition (OMR) to interpret musical notation an
 | **SoundFont (.sf2)** | Required for FluidSynth    | `/usr/share/sounds/sf2/FluidR3_GM.sf2` |
 | **Poppler**  | Required for PDF-to-image conversion | `poppler-utils` or `poppler` |
 
-Install system dependencies:
+### Install system dependencies:
 
 ```bash
 # Ubuntu/Debian
@@ -38,30 +38,10 @@ sudo apt install ffmpeg fluidsynth poppler-utils
 brew install ffmpeg fluidsynth poppler
 ```
 
-## Install Dependencies
+### Install Dependencies
 ```bash
 poetry install
 poetry shell
-```
-
----
-
-## 🛠️ Configuration
-
-Open the top of your main.py file and edit the following paths as needed:
-
-```python
-### Path to the input file (PDF or image)
-input_file = Path("pdf.pdf")  # e.g., "sample.pdf" or "page-0001.png"
-
-### Output directory where all results will be stored
-output_dir = Path("output")
-
-### Path to the Audiveris executable
-audiveris_bin = Path("/opt/audiveris/bin/Audiveris")
-
-### Path to your SoundFont file (.sf2) — required by FluidSynth
-soundfont_path = Path("/usr/share/sounds/sf2/FluidR3_GM.sf2")
 ```
 
 ---
