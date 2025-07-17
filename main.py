@@ -1,45 +1,4 @@
-"""
-PDF/Image to MP3 Sheet Music Converter using Audiveris + Music21 + FluidSynth
-
-This script performs Optical Music Recognition (OMR) on sheet music in PDF or image formats
-(e.g., JPG, PNG) and converts them to audible MP3 output. It supports multi-page PDFs,
-uses Audiveris (Java-based OMR engine), and Includes a fallback to MuseScore for vector-based (non-scanned) PDF import.
-
-Workflow:
----------
-1. Input: Single image or multi-page PDF sheet music file.
-2. Conversion:
-   - PDF pages are split into 400 DPI grayscale PNGs.
-   - Audiveris extracts MusicXML from each image.
-   - If Audiveris fails, MuseScore is tried (PDFs only).
-3. MusicXML is parsed using `music21`, cleaned (bad repeats removed, tempo normalized).
-4. MIDI is generated and converted to MP3 using FluidSynth and FFmpeg.
-5. MP3 is auto-played after generation.
-
-Requirements:
--------------
-- Python 3.11+
-- Installed CLI tools:
-  - Audiveris (Java OMR tool): e.g. `/opt/audiveris/bin/Audiveris`
-  - MuseScore (optional fallback): musescore, musescore3, or mscore
-  - FluidSynth (MIDI synth): `fluidsynth`
-  - FFmpeg (audio encoding): `ffmpeg`
-- A SoundFont file: e.g., `/usr/share/sounds/sf2/FluidR3_GM.sf2`
-- Python packages:
-  - music21
-  - pdf2image
-  - natsort
-
-Usage:
-------
-1. Set `input_file` and `output_dir` variables in the USER CONFIGURATION section.
-2. Ensure dependencies are installed and paths are correct.
-3. Run the script:
-   ```bash```
-   python main.py
-
-"""
-
+from dotenv import load_dotenv
 import json
 import os
 import subprocess
@@ -50,39 +9,31 @@ from pathlib import Path
 from music21 import converter, stream, tempo, chord, note
 from natsort import natsorted
 from pdf2image import convert_from_path
-os.environ["TESSDATA_PREFIX"] = "/usr/share/tesseract-ocr/4.00/tessdata"
-# === USER CONFIGURATION ===
+
+load_dotenv()
+
+# Optionally set TESSDATA_PREFIX
+tessdata_prefix = os.getenv("TESSDATA_PREFIX")
+if tessdata_prefix:
+    os.environ["TESSDATA_PREFIX"] = tessdata_prefix
+
+# Get config from .env or fallback
 
 # Path to the input file (can be a scanned sheet music PDF or an image like PNG/JPG)
-input_file = Path("Ed Sheeran-Shape of you.pdf")  # PDF or image
+input_file = Path(os.getenv("INPUT_FILE", "default.pdf"))
+output_dir = Path(os.getenv("OUTPUT_DIR", "output"))
+audiveris_bin = Path(os.getenv("AUDIVERIS_BIN", "/opt/audiveris/bin/Audiveris"))
+soundfont_path = Path(os.getenv("SOUNDFONT_PATH", "/usr/share/sounds/sf2/FluidR3_GM.sf2"))
 
-# Directory where all intermediate and final outputs (images, MusicXML, MIDI, MP3) will be saved
-output_dir = Path("output")
+transpose_interval = int(os.getenv("TRANSPOSE_INTERVAL", 0))
+strategy = os.getenv("STRATEGY", None)
 
-# Path to the Audiveris executable (Java-based OMR tool) — must be correctly installed and accessible
-audiveris_bin = Path("/opt/audiveris/bin/Audiveris")
-
-# Path to a General MIDI SoundFont (.sf2) file used by FluidSynth to synthesize audio from MIDI
-soundfont_path = Path("/usr/share/sounds/sf2/FluidR3_GM.sf2")
+left_hand = os.getenv("LEFT_HAND", "False").lower() == "true"
+right_hand = os.getenv("RIGHT_HAND", "False").lower() == "true"
 
 # === Logging setup ===
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger()
-
-"""
-Strategy	        Keeps
-top        -> Highest - pitched note
-bottom     -> Lowest - pitched note
-first      -> First pitch (as listed)
-last       -> Last pitch (as listed)
-"""
-strategy= None
-
-left_hand = False
-right_hand = False
-
-# Shift all notes by N semitones (positive = up, negative = down)
-transpose_interval = 0  # Example: +2 semitones up, or -1 for down
 
 
 # === Dependency check ===
@@ -118,7 +69,6 @@ def apply_alternating_tempos(score, bpm1: int = 90, bpm2: int =160, seconds_per_
     current_offset = 0.0
     total_quarters = score.highestTime
     toggle = True
-    current_time = 0.0  # Real time elapsed in seconds
 
     while current_offset < total_quarters:
         bpm = bpm1 if toggle else bpm2
@@ -128,7 +78,6 @@ def apply_alternating_tempos(score, bpm1: int = 90, bpm2: int =160, seconds_per_
         # Compute how many quarter notes are covered in this step
         quarters_this_step = (bpm / 60.0) * seconds_per_step
         current_offset += quarters_this_step
-        current_time += seconds_per_step
         toggle = not toggle
 
     return score
@@ -243,6 +192,16 @@ def extract_midi_note_sequence(midi_path: Path) -> list[dict]:
 
 
 def save_note_sequence_as_json(notes: list[dict], json_path: Path):
+    """
+        Save a sequence of notes to a JSON file.
+
+        Parameters:
+            notes (list of dict): A list of note data dictionaries,
+                typically containing fields like 'offset' and 'pitch'.
+            json_path (Path): Destination file path where the JSON will be saved.
+
+        The resulting JSON file will be human-readable (pretty-printed with indentation).
+        """
     with open(json_path, "w") as f:
         json.dump(notes, f, indent=2)
 
@@ -449,8 +408,8 @@ def convert_to_midi(mp3_base: str, mxl_files: list[Path], out_dir: Path) -> Path
             score = make_score_monophonic(score, strategy=strategy)
 
         # === Insert here: Apply alternating tempos ===
-        log.info("Applying alternating tempos: 90 ↔ 160 BPM every 10s")
-        score = apply_alternating_tempos(score, bpm1=90, bpm2=160, seconds_per_step=10)
+        # log.info("Applying alternating tempos: 90 ↔ 160 BPM every 10s")
+        # score = apply_alternating_tempos(score, bpm1=90, bpm2=160, seconds_per_step=10)
 
         score.quantize(inPlace=True)
         score.write("midi", fp=str(midi_path))
